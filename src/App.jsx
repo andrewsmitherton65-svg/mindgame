@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { Analytics } from "@vercel/analytics/react";
 
 // ── DESIGN TOKENS ─────────────────────────────────────────────────────────────
 const css = `
@@ -1077,6 +1078,7 @@ export default function App() {
         </nav>
         {toast && <Toast msg={toast} onDone={()=>setToast(null)}/>}
       </div>
+      <Analytics />
     </>
   );
 }
