@@ -1069,7 +1069,7 @@ function PracticeTrackerPage({ user, onToast }) {
       `${l.activity} (${l.duration}min) — mental areas: ${l.mentalAreas?.join(", ") || "none"}, rating: ${l.rating}/5, notes: ${l.notes || "none"}`
     ).join("\n");
 
-    const openingPrompt = `You are Dr. Mind, a warm and skilled sports psychologist. The athlete just logged a practice session. Greet them by name, reference what they just logged specifically, give them 2-3 specific things to work on mentally based on their recent sessions, and ask them how they felt about it to start a conversation.\n\nAthlete: ${user.name}, Sport: ${user.sport}\nJust logged: ${log.activity} (${log.duration}min), mental rating: ${log.rating}/5, areas: ${log.mentalAreas?.join(", ") || "none"}, notes: "${log.notes || "none"}"\nRecent history:\n${recentSummary}`;
+    const openingPrompt = `You are Dr. Mind, a personal sports psychologist. Be conversational and caring but concise. In 4-5 sentences: greet them by name, acknowledge what they just logged, identify the biggest mental area to improve based on their data, give one concrete technique or drill they can use to fix it, then ask one follow up question to keep the conversation going.\n\nAthlete: ${user.name}, Sport: ${user.sport}\nJust logged: ${log.activity} (${log.duration}min), mental rating: ${log.rating}/5, areas: ${log.mentalAreas?.join(", ") || "none"}, notes: "${log.notes || "none"}"\nRecent history:\n${recentSummary}`;
 
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -1120,7 +1120,7 @@ function PracticeTrackerPage({ user, onToast }) {
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
           max_tokens: 1000,
-          system: `You are Dr. Mind, a warm and skilled sports psychologist helping ${user.name} who plays ${user.sport}. You have access to their recent practice logs: ${recentSummary}. Give specific, practical mental performance advice based on their logs and what they share with you.`,
+          system: `You are Dr. Mind, a personal sports psychologist for ${user.name} who plays ${user.sport}. Be warm and conversational but keep responses to 3-5 sentences. Always be specific to what they share — give real advice, name actual techniques, and ask follow up questions to dig deeper. No generic fluff. Recent logs: ${recentSummary}.`,
           messages: updatedMsgs.map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.text }))
         })
       });
@@ -1133,9 +1133,33 @@ function PracticeTrackerPage({ user, onToast }) {
     setChatLoading(false);
   };
 
-  const saveLog = () => {
+  const saveLog = async () => {
     if (!form.activity || !form.duration || !form.rating) return onToast("Fill in activity, duration and rating");
     const log = { ...form, date: new Date().toISOString(), id: Date.now() };
+
+    // Generate a short tip for this log
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true"
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          messages: [{
+            role: "user",
+            content: `You are a sports psychologist. Based on this practice log, give ONE specific thing this athlete needs to work on mentally. One sentence only, be direct and actionable.\n\nAthlete: ${user.name}, Sport: ${user.sport}\nActivity: ${log.activity}, Duration: ${log.duration}min, Mental rating: ${log.rating}/5, Areas: ${log.mentalAreas?.join(", ") || "none"}, Notes: "${log.notes || "none"}"`
+          }]
+        })
+      });
+      const data = await res.json();
+      log.tip = data.content?.[0]?.text || null;
+    } catch { log.tip = null; }
+
     const earnedXp = getXpForLog(log);
     const oldLevel = getLevel(xp);
     const newXp = xp + earnedXp;
@@ -1276,11 +1300,17 @@ function PracticeTrackerPage({ user, onToast }) {
                 <span className="tag tag-purple">{"⭐".repeat(l.rating)}</span>
               </div>
               {l.mentalAreas?.length > 0 && (
-                <div className="flex gap8" style={{flexWrap:"wrap"}}>
+                <div className="flex gap8 mb8" style={{flexWrap:"wrap"}}>
                   {l.mentalAreas.map(a=><span key={a} className="tag" style={{background:"rgba(100,116,139,.15)",color:"var(--muted)",fontSize:10}}>{a}</span>)}
                 </div>
               )}
-              {l.notes && <p className="text-xs text-muted mt8">{l.notes}</p>}
+              {l.notes && <p className="text-xs text-muted mb8">{l.notes}</p>}
+              {l.tip && (
+                <div style={{background:"rgba(45,212,191,.08)",border:"1px solid rgba(45,212,191,.2)",borderRadius:8,padding:"8px 12px",marginTop:4}}>
+                  <span className="text-xs fw600" style={{color:"var(--primary)"}}>🧠 Dr. Mind: </span>
+                  <span className="text-xs" style={{color:"var(--text)"}}>{l.tip}</span>
+                </div>
+              )}
             </div>
           ))
         )
