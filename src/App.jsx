@@ -292,6 +292,7 @@ function HomePage({ user, onNav, onToast }) {
     { label: "Recovery", icon: "refresh", page: "recovery", color: "#0ea5e9" },
     { label: "Self-Talk", icon: "message", page: "selftalk", color: "#10b981" },
     { label: "Journal", icon: "book", page: "journal", color: "#8b5cf6" },
+    { label: "Practice Log", icon: "trend", page: "practice", color: "#10b981" },
     { label: "AI Coach", icon: "star", page: "coach", color: "#f59e0b", premium: true },
   ];
 
@@ -995,6 +996,299 @@ function ProfilePage({ user, onUpdate, onLogout }) {
   );
 }
 
+// ── LEVELS DATA ───────────────────────────────────────────────────────────────
+const LEVELS = [
+  { level: 1, title: "Rookie",        icon: "🥉", xpRequired: 0,    color: "#94a3b8" },
+  { level: 2, title: "Contender",     icon: "🥈", xpRequired: 100,  color: "#60a5fa" },
+  { level: 3, title: "Competitor",    icon: "🥇", xpRequired: 250,  color: "#34d399" },
+  { level: 4, title: "Athlete",       icon: "🏅", xpRequired: 500,  color: "#a78bfa" },
+  { level: 5, title: "Elite",         icon: "🏆", xpRequired: 900,  color: "#f59e0b" },
+  { level: 6, title: "All-Star",      icon: "⭐", xpRequired: 1400, color: "#f97316" },
+  { level: 7, title: "Champion",      icon: "👑", xpRequired: 2000, color: "#ef4444" },
+  { level: 8, title: "Legend",        icon: "🔥", xpRequired: 3000, color: "#ec4899" },
+];
+
+const MENTAL_AREAS = ["Focus","Confidence","Composure","Energy","Communication","Resilience","Motivation","Preparation"];
+
+const getLevel = (xp) => {
+  let current = LEVELS[0];
+  for (const l of LEVELS) { if (xp >= l.xpRequired) current = l; }
+  return current;
+};
+
+const getNextLevel = (xp) => {
+  for (const l of LEVELS) { if (xp < l.xpRequired) return l; }
+  return null;
+};
+
+const getXpForLog = (log) => {
+  let xp = 20; // base
+  if (log.duration >= 60) xp += 10;
+  if (log.duration >= 120) xp += 10;
+  if (log.notes) xp += 5;
+  if (log.mentalAreas?.length > 0) xp += log.mentalAreas.length * 3;
+  return xp;
+};
+
+// ── PRACTICE TRACKER ──────────────────────────────────────────────────────────
+function PracticeTrackerPage({ user, onToast }) {
+  const [view, setView] = useState("list");
+  const [logs, setLogs] = useState(store.get(`mg_practice_${user.email}`) || []);
+  const [xp, setXp] = useState(store.get(`mg_xp_${user.email}`) || 0);
+  const [form, setForm] = useState({ activity:"", duration:"", mentalAreas:[], notes:"", rating:null });
+  const [feedback, setFeedback] = useState(null);
+  const [loadingFeedback, setLoadingFeedback] = useState(false);
+  const [showLevelUp, setShowLevelUp] = useState(false);
+  const [newLevel, setNewLevel] = useState(null);
+
+  const currentLevel = getLevel(xp);
+  const nextLevel = getNextLevel(xp);
+  const xpToNext = nextLevel ? nextLevel.xpRequired - xp : 0;
+  const xpProgress = nextLevel ? ((xp - currentLevel.xpRequired) / (nextLevel.xpRequired - currentLevel.xpRequired)) * 100 : 100;
+
+  const toggleArea = (area) => {
+    setForm(f => ({
+      ...f,
+      mentalAreas: f.mentalAreas.includes(area)
+        ? f.mentalAreas.filter(a => a !== area)
+        : [...f.mentalAreas, area]
+    }));
+  };
+
+  const [chatMsgs, setChatMsgs] = useState([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatBottomRef = useRef(null);
+
+  useEffect(() => { chatBottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMsgs]);
+
+  const startFeedbackChat = async (log) => {
+    setLoadingFeedback(true);
+    const allLogs = [...logs, log];
+    const recentSummary = allLogs.slice(-5).map(l =>
+      `${l.activity} (${l.duration}min) — mental areas: ${l.mentalAreas?.join(", ") || "none"}, rating: ${l.rating}/5, notes: ${l.notes || "none"}`
+    ).join("\n");
+
+    const openingPrompt = `You are Dr. Mind, a warm and skilled sports psychologist. The athlete just logged a practice session. Greet them by name, reference what they just logged specifically, give them 2-3 specific things to work on mentally based on their recent sessions, and ask them how they felt about it to start a conversation.\n\nAthlete: ${user.name}, Sport: ${user.sport}\nJust logged: ${log.activity} (${log.duration}min), mental rating: ${log.rating}/5, areas: ${log.mentalAreas?.join(", ") || "none"}, notes: "${log.notes || "none"}"\nRecent history:\n${recentSummary}`;
+
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true"
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          messages: [{ role: "user", content: openingPrompt }]
+        })
+      });
+      const data = await res.json();
+      const reply = data.content?.[0]?.text || "Great session logged! How are you feeling about your mental performance lately?";
+      setChatMsgs([{ role: "assistant", text: reply }]);
+    } catch {
+      setChatMsgs([{ role: "assistant", text: "Great session! How are you feeling mentally after that practice?" }]);
+    }
+    setLoadingFeedback(false);
+  };
+
+  const sendChat = async () => {
+    if (!chatInput.trim() || chatLoading) return;
+    const userMsg = chatInput.trim();
+    setChatInput("");
+    const updatedMsgs = [...chatMsgs, { role: "user", text: userMsg }];
+    setChatMsgs(updatedMsgs);
+    setChatLoading(true);
+
+    const allLogs = logs;
+    const recentSummary = allLogs.slice(-5).map(l =>
+      `${l.activity} (${l.duration}min) — mental areas: ${l.mentalAreas?.join(", ") || "none"}, rating: ${l.rating}/5`
+    ).join("\n");
+
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true"
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          system: `You are Dr. Mind, a warm and skilled sports psychologist helping ${user.name} who plays ${user.sport}. You have access to their recent practice logs: ${recentSummary}. Give specific, practical mental performance advice based on their logs and what they share with you.`,
+          messages: updatedMsgs.map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.text }))
+        })
+      });
+      const data = await res.json();
+      const reply = data.content?.[0]?.text || "Tell me more about how you're feeling.";
+      setChatMsgs(m => [...m, { role: "assistant", text: reply }]);
+    } catch {
+      setChatMsgs(m => [...m, { role: "assistant", text: "Connection issue. Please try again." }]);
+    }
+    setChatLoading(false);
+  };
+
+  const saveLog = () => {
+    if (!form.activity || !form.duration || !form.rating) return onToast("Fill in activity, duration and rating");
+    const log = { ...form, date: new Date().toISOString(), id: Date.now() };
+    const earnedXp = getXpForLog(log);
+    const oldLevel = getLevel(xp);
+    const newXp = xp + earnedXp;
+    const updatedLevel = getLevel(newXp);
+    const next = [...logs, log];
+    setLogs(next);
+    store.set(`mg_practice_${user.email}`, next);
+    setXp(newXp);
+    store.set(`mg_xp_${user.email}`, newXp);
+    if (updatedLevel.level > oldLevel.level) {
+      setNewLevel(updatedLevel);
+      setShowLevelUp(true);
+    } else {
+      onToast(`+${earnedXp} XP earned! 💪`);
+    }
+    setChatMsgs([]);
+    startFeedbackChat(log);
+    setForm({ activity:"", duration:"", mentalAreas:[], notes:"", rating:null });
+    setView("feedback");
+  };
+
+  const ratingLabels = ["", "Poor", "Below Avg", "Average", "Good", "Excellent"];
+
+  if (showLevelUp) return (
+    <div className="page" style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",textAlign:"center",minHeight:"70vh"}}>
+      <div style={{fontSize:72}}>{newLevel?.icon}</div>
+      <h1 className="page-title mt16" style={{fontSize:32}}>Level Up!</h1>
+      <p className="text-muted mt8">You reached</p>
+      <div style={{fontSize:24,fontWeight:800,color:newLevel?.color,margin:"8px 0"}}>{newLevel?.title}</div>
+      <div className="tag tag-teal mt8">Level {newLevel?.level}</div>
+      <button className="btn btn-primary mt24" onClick={()=>setShowLevelUp(false)}>Keep Going 🔥</button>
+    </div>
+  );
+
+  return (
+    <div className="page">
+      {/* Level Card */}
+      <div className="card mb16" style={{background:`linear-gradient(135deg, ${currentLevel.color}22, ${currentLevel.color}11)`, border:`1px solid ${currentLevel.color}44`}}>
+        <div className="row mb8">
+          <div className="flex gap8 items-center">
+            <span style={{fontSize:28}}>{currentLevel.icon}</span>
+            <div>
+              <div className="fw700" style={{color:currentLevel.color}}>{currentLevel.title}</div>
+              <div className="text-xs text-muted">Level {currentLevel.level}</div>
+            </div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div className="fw700" style={{color:currentLevel.color}}>{xp} XP</div>
+            {nextLevel && <div className="text-xs text-muted">{xpToNext} to next</div>}
+          </div>
+        </div>
+        {nextLevel && (
+          <>
+            <div className="prog-bar"><div className="prog-fill" style={{width:`${xpProgress}%`,background:`linear-gradient(90deg,${currentLevel.color},${nextLevel.color})`}}/></div>
+            <div className="row mt4">
+              <span className="text-xs text-muted">{currentLevel.title}</span>
+              <span className="text-xs text-muted">{nextLevel.title} {nextLevel.icon}</span>
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="row mb16">
+        <h1 className="page-title" style={{marginBottom:0}}>Practice Log</h1>
+        <button className="btn btn-primary" style={{padding:"8px 16px",fontSize:13}} onClick={()=>setView(v=>v==="list"?"new":"list")}>
+          {view==="list"||view==="feedback" ? <><Icon d={Icons.plus} size={16}/>Log</>: "Cancel"}
+        </button>
+      </div>
+
+      {view === "new" && (
+        <>
+          <label className="label">Activity / Practice Type</label>
+          <input className="input mb12" placeholder="e.g. Team practice, gym, game..." value={form.activity} onChange={e=>setForm(f=>({...f,activity:e.target.value}))}/>
+          <label className="label">Duration (minutes)</label>
+          <input className="input mb12" type="number" placeholder="e.g. 90" value={form.duration} onChange={e=>setForm(f=>({...f,duration:e.target.value}))}/>
+          <label className="label">Mental Performance Rating</label>
+          <div className="mood-row mb12">
+            {[1,2,3,4,5].map(r=>(
+              <button key={r} className={`mood-dot ${form.rating===r?"sel":""}`} style={{width:48,height:48,fontSize:11}} onClick={()=>setForm(f=>({...f,rating:r}))}>
+                {r}
+              </button>
+            ))}
+          </div>
+          {form.rating && <p className="text-xs text-muted mb12" style={{textAlign:"center"}}>{ratingLabels[form.rating]}</p>}
+          <label className="label">Mental Areas (select all that apply)</label>
+          <div className="mood-row mb12">
+            {MENTAL_AREAS.map(a=>(
+              <button key={a} className={`pill ${form.mentalAreas.includes(a)?"active":""}`} style={{fontSize:12}} onClick={()=>toggleArea(a)}>{a}</button>
+            ))}
+          </div>
+          <label className="label">Notes (optional)</label>
+          <textarea className="input mb16" rows={3} placeholder="How did it feel? What happened?" value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))}/>
+          <button className="btn btn-primary btn-full" onClick={saveLog}>Save & Get Feedback</button>
+        </>
+      )}
+
+      {view === "feedback" && (
+        <div style={{display:"flex",flexDirection:"column",height:"calc(100vh - 280px)"}}>
+          <div className="card mb12" style={{border:"1px solid rgba(45,212,191,.3)",flexShrink:0}}>
+            <div className="row">
+              <div className="fw700">🧠 Dr. Mind — Practice Review</div>
+              <button className="btn btn-ghost" style={{fontSize:12,padding:"4px 8px"}} onClick={()=>setView("list")}>View Logs</button>
+            </div>
+          </div>
+          <div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:12,paddingBottom:12}}>
+            {chatMsgs.length === 0 && loadingFeedback && (
+              <div className="msg msg-ai"><div className="flex gap8 items-center"><div className="spinner"/><span>Analyzing your practice...</span></div></div>
+            )}
+            {chatMsgs.map((m,i)=>(
+              <div key={i} className={`msg ${m.role==="assistant"?"msg-ai":"msg-user"}`}>{m.text}</div>
+            ))}
+            {chatLoading && <div className="msg msg-ai"><div className="flex gap8 items-center"><div className="spinner"/><span>Thinking...</span></div></div>}
+            <div ref={chatBottomRef}/>
+          </div>
+          <div className="flex gap8" style={{paddingTop:12,borderTop:"1px solid var(--border)"}}>
+            <input className="input" style={{flex:1}} placeholder="Ask Dr. Mind anything..." value={chatInput} onChange={e=>setChatInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&sendChat()}/>
+            <button className="btn btn-primary" style={{padding:"12px 14px"}} onClick={sendChat}><Icon d={Icons.send} size={16}/></button>
+          </div>
+        </div>
+      )}
+
+      {view === "list" && (
+        logs.length === 0 ? (
+          <div style={{textAlign:"center",padding:"60px 0",color:"var(--muted)"}}>
+            <div style={{fontSize:48}}>🏋️</div>
+            <p className="mt12">No practice logs yet. Start logging to level up!</p>
+            <button className="btn btn-primary mt16" onClick={()=>setView("new")}>Log First Session</button>
+          </div>
+        ) : (
+          [...logs].reverse().map((l,i)=>(
+            <div key={i} className="card">
+              <div className="row mb8">
+                <span className="fw600 text-sm">{l.activity}</span>
+                <span className="text-xs text-muted">{new Date(l.date).toLocaleDateString()}</span>
+              </div>
+              <div className="flex gap8 mb8">
+                <span className="tag tag-teal">{l.duration} min</span>
+                <span className="tag tag-purple">{"⭐".repeat(l.rating)}</span>
+              </div>
+              {l.mentalAreas?.length > 0 && (
+                <div className="flex gap8" style={{flexWrap:"wrap"}}>
+                  {l.mentalAreas.map(a=><span key={a} className="tag" style={{background:"rgba(100,116,139,.15)",color:"var(--muted)",fontSize:10}}>{a}</span>)}
+                </div>
+              )}
+              {l.notes && <p className="text-xs text-muted mt8">{l.notes}</p>}
+            </div>
+          ))
+        )
+      )}
+    </div>
+  );
+}
+
 // ── LOCKED PAGE ───────────────────────────────────────────────────────────────
 function LockedPage({ onNav }) {
   return (
@@ -1035,7 +1329,7 @@ export default function App() {
 
   const nav = [
     { id:"home", icon:"home", label:"Home" },
-    { id:"progress", icon:"trend", label:"Progress" },
+    { id:"practice", icon:"flame", label:"Train" },
     { id:"journal", icon:"book", label:"Journal" },
     { id:"coach", icon:"star", label:"Coach" },
     { id:"profile", icon:"user", label:"Profile" },
@@ -1053,6 +1347,7 @@ export default function App() {
       case "selftalk": return <SelfTalkPage {...props}/>;
       case "journal": return <JournalPage {...props}/>;
       case "progress": return <ProgressPage {...props}/>;
+      case "practice": return <PracticeTrackerPage {...props}/>;
       case "coach": return user.premium ? <CoachPage {...props}/> : <LockedPage onNav={setPage}/>;
       case "premium": return <PremiumPage user={user} onUpgrade={handleUpgrade}/>;
       case "profile": return <ProfilePage user={user} onUpdate={setUser} onLogout={handleLogout}/>;
